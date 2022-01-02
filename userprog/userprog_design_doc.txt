@@ -1,0 +1,311 @@
+                     +--------------------------+
+                     |         EE 461S          |
+                     | PROJECT 2: USER PROGRAMS |
+                     |      DESIGN DOCUMENT     |
+                     +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Eralp Orkun eaorkun@utexas.edu
+Jeffrey Liu jltexas@utexas.edu
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+                           ARGUMENT PASSING
+                           ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+# 1: Adding semaphores, file descriptor table, exit status, page directories, and parent-child (for sys_wait) relationship for thread
+
+struct thread {
+    /* Owned by thread.c. */
+    tid_t              tid;      /* Thread identifier. */
+    enum thread_status status;   /* Thread state. */
+    char               name[16]; /* Name (for debugging purposes). */
+    uint8_t           *stack;    /* Saved stack pointer. */
+    int                priority; /* Priority. */
+    struct list_elem   allelem;  /* List element for all threads list. */
+    /* Shared between thread.c and synch.c. */
+    struct list_elem elem; /* List element. */
+
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+
+    // Three Semaphores 
+    struct semaphore launch;
+    struct semaphore dying;
+    struct semaphore dead;
+
+    // Executable File Pointer
+    struct file * filePointer;
+
+    // Parent-Child relationship for sys_wait
+    tid_t parent_tid;
+    tid_t successChild[20];
+    int nextSuccessChild;
+
+    /* Page directory. */
+    uint32_t *pagedir; 
+    int32_t exitStatus; 
+
+    // Checks if the load() function was successful 
+    int loadSuccess; 
+
+    // Thread has a list of file descriptor tables
+    struct file * fdtab[25]; 
+    int nextfd; // the next available file descriptor entry 
+#endif    
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+1) We implemented argument parsing by passing in the command string and a reference to a statically allocated
+array of strings to our parser function which used strtok_r to separate the arguments into distinct strings.
+2) We added the elements of argv[] onto the stack by first decrementing the stack by the length of the element and then we
+copyed over our element to the stack location. We started at the back of argv[size] and iterated to argv[0] such that the 
+arguments at the bottom of the stack would be at the end of argv[]. The stack implementation was the same implementation
+described in class. 
+We followed the order -> (argv strings (copied over as described above), null pad, null, argv[i], argv[i-1], ... argv[0], argv, argc, return).
+3) Currently we are not preventing overflowing the stack page as this was not a explicit requirement/testcase for userprog
+but it would be good practice to check that the number of arguments and content will not over flow the stack before decrementing
+(before setting up the stack)
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+Pintos uses strtok_r() because we need a pointer to save when implementing the stack. 
+Also, strtok() uses global data, so it wouldnt be safe to use in the kernel. This is 
+unlike the rentrant function strtok_r() which can be interrupted during a context switch and still preform
+correctly.
+
+
+                             SYSTEM CALLS
+                             ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+# 1: Adding semaphores, file descriptor table, exit status, page directories, and parent-child 
+(for sys_wait) relationship for thread
+
+struct thread {
+    /* Owned by thread.c. */
+    tid_t              tid;      /* Thread identifier. */
+    enum thread_status status;   /* Thread state. */
+    char               name[16]; /* Name (for debugging purposes). */
+    uint8_t           *stack;    /* Saved stack pointer. */
+    int                priority; /* Priority. */
+    struct list_elem   allelem;  /* List element for all threads list. */
+    /* Shared between thread.c and synch.c. */
+    struct list_elem elem; /* List element. */
+
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+
+    // Three Semaphores 
+    struct semaphore launch;
+    struct semaphore dying;
+    struct semaphore dead;
+
+    // Executable File Pointer
+    struct file * filePointer;
+
+    // Parent-Child relationship for sys_wait
+    tid_t parent_tid;
+    tid_t successChild[20];
+    int nextSuccessChild;
+
+    /* Page directory. */
+    uint32_t *pagedir; 
+    int32_t exitStatus; 
+
+    // Checks if the load() function was successful 
+    int loadSuccess; 
+
+    // Thread has a list of file descriptor tables
+    struct file * fdtab[25]; 
+    int nextfd; // the next available file descriptor entry 
+#endif    
+
+#2 Added a lock in syscall.c to handle synchronization with file i/o
+struct lock fs_lock;
+
+
+>> B2: Describe how file descriptors are associated with open files.
+- Open files have pointers to the file memory location where one can read/write from in the file. 
+These pointers are stored in the file descriptor table per process and can be indexed using file descriptors(which index into the file pointers)
+
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+-  File Descriptors are unique to just within a single process since the file descriptors themselves are 
+the indexes into the table. The only file decriptors that are shared in PINTOS are 0 and 1 for stdin and stdout.
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+
+We perform checks before reading and writing which includes checking if the pointer is above PHYS_BASE, 
+checking if the file is not null, and checking if the page which contains the pointer is valid. 
+
+After these pre condition checks we called putbuf(buffer, size) if the fd == 1 (std out)
+or file_write(cur->fdtab[fd], buffer, size) otherwise. buffer holds the data we are writing.
+
+Read is identical to write except the file discriptor is 0 and uses input_getc(), 
+while otherwise it uses file_read()
+
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+
+For a full page of data: the minimum would be 1 (all bytes lie in the same page) and the maximum 4096 pages (all bytes lie in different pages).
+For 2 bytes of data: 1 would still be the minumum but 2 will be the maximum.
+There could be improvement in the topline numbers if we made sure to maintain all bytes of data on 
+1 single page (and fill it up), before using another page.
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+
+The wait system call calls the process_wait function. 
+It allows the parent thread to wait for a child process to complete and reap its exit status. 
+When this exit status is reaped, then the child is allowed to die. 
+This is implmented using 2 semaphores for the "two way handshake".
+
+Before doing this exchange, we verify a couple error conditions to make sure the parent is waiting
+on the correct child.
+
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+We attempted to avoid obscuring the primary function of the code by first
+verify a basic working implmenetation of system_calls, and then later reworked these same system calls
+to first check whether the pointers being passed in were valid (ie. not null or in unallocated page). A reusable helper function was created 
+to help achieve this goal. An example would be under the sys_write system call where we checked the validity of the buffer before we wrote.
+
+We ensured that all temporarily resources were freed by the process_exit routine called after every sys_call.
+Additionally, locks were implemented close to any file i/o operation.
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+
+Our code ensures that the system call will not return before the new executable has completed by using
+a launch semaphore. This blocks the the parent on the launch status of the child (semaphore) until 
+the child calls sema_up(&(cur->launch))
+
+
+The loadSuccess is a variable set in the child which is set before the launch sempahore unblocks the parent. 
+When the parent unblocks, it then reads its child's launchSuccess variable and proceeds to either continue or terminate.
+
+
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+Two way handshake using two sempahores (dying and dead). As talked about in class, this design
+makes it so it doesn't matter if the parent or child reaches there first. If the parent sema_down(dying) after the child
+already sema_up(dying), it won't matter because the child will be blocked on the second semaphore and will allow the parent
+to "Catch up". Since the child is blocked on the second semaphore (dead), this ensures that the parent has time to reap the exit status
+before sending the signal to the child to unblock and die. Child then frees its resources in thread_exit().
+
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+We checked the user memory with a custom function (check_if_valid_pointer) because 
+it was easier to implement than using the getuser() and putuser().
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+
+Advantages for the design for file descriptors is its simplicity :)
+
+Disadvantages:
+If a process uses more than 25 file descriptors, the file descriptor buffer will overflow because
+it is currently implemented as a static array. It also uses a lot of space if less than 25 file
+descriptors. Improvements can be to dynamically reallocate space for the array. Additionally, we
+are not currently closing unused file descriptors.
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+
+We did not change it.
+
+                           SURVEY QUESTIONS
+                           ================
+
+Answering these questions is optional, but it will help us improve the
+course in future semesters.  Feel free to tell us anything you
+want -- these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the semester.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+Took a long time to get done, was not too hard though (just steep learning curve).
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+Working on semaphores helped me understand the need for concurrency within an OS.
+
+>> Is there some particular fact or hint we should give students in
+>> future semesters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+Yes, some actual insight on the relationship between processes and threads would be nice.
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future semesters or the remaining projects?
+
+No.
+
+>> Any other comments?
+Please make this file a markdown next time.
